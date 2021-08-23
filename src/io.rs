@@ -11,7 +11,7 @@ pub(crate) async fn write_size(socket: &mut OwnedWriteHalf, size: usize) -> Resu
 
 #[cfg(feature = "u16-packetsize")]
 pub(crate) async fn write_size(socket: &mut OwnedWriteHalf, size: usize) -> Result<()> {
-    socket.write_u16(size as u16).await
+    socket.write_u16_le(size as u16).await
 }
 
 #[cfg(not(feature = "u16-packetsize"))]
@@ -21,5 +21,5 @@ pub(crate) async fn read_size(socket: &mut OwnedReadHalf) -> Result<u32> {
 
 #[cfg(feature = "u16-packetsize")]
 pub(crate) async fn read_size(socket: &mut OwnedReadHalf) -> Result<u16> {
-    socket.read_u16().await
+    socket.read_u16_le().await
 }
