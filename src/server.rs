@@ -15,6 +15,7 @@ use crate::{
     error::NetworkError,
     io::{write_size, read_size},
     network_message::{ClientMessage, NetworkMessage, ServerMessage},
+    marshaling::PacketMarshalingStrategy,
     ConnectionId, NetworkData, NetworkPacket, NetworkSettings, ServerNetworkEvent, SyncChannel,
 };
 
@@ -214,7 +215,7 @@ impl NetworkServer {
     }
 }
 
-pub(crate) fn handle_new_incoming_connections(
+pub(crate) fn handle_new_incoming_connections<Encoding: PacketMarshalingStrategy>(
     server: Res<NetworkServer>,
     network_settings: Res<NetworkSettings>,
     mut network_events: EventWriter<ServerNetworkEvent>,
@@ -257,7 +258,7 @@ pub(crate) fn handle_new_incoming_connections(
                                 trace!("Listening for length!");
 
                                 let length = match read_size(&mut read_socket).await {
-                                    Ok(len) => len as usize,
+                                    Ok(len) => (len - 2) as usize,
                                     Err(err) => {
                                         // If we get an EOF here, the connection was broken and we simply report a 'disconnected' signal
                                         if err.kind() == std::io::ErrorKind::UnexpectedEof { break }
@@ -267,13 +268,10 @@ pub(crate) fn handle_new_incoming_connections(
                                     }
                                 };
 
-                                trace!("Received packet with length: {}", length);
-
                                 if length > network_settings.max_packet_length {
                                     error!("Received too large packet from [{}]: {} > {}", conn_id, length, network_settings.max_packet_length);
                                     break;
                                 }
-
 
                                 match read_socket.read_exact(&mut buffer[..length]).await {
                                     Ok(_) => (),
@@ -285,7 +283,7 @@ pub(crate) fn handle_new_incoming_connections(
 
                                 trace!("Read buffer of length {}", length);
 
-                                let packet: NetworkPacket = match bincode::deserialize(&buffer[..length]) {
+                                let packet: NetworkPacket = match Encoding::deserialize(&buffer[..length]) {
                                     Ok(packet) => packet,
                                     Err(err) => {
                                         error!("Failed to decode network packet from [{}]: {}", conn_id, err);
@@ -318,15 +316,15 @@ pub(crate) fn handle_new_incoming_connections(
                             let mut buffer: Vec<u8> = vec![0; send_settings.max_packet_length];
 
                             while let Some(message) = recv_message.recv().await {
-                                let size = match bincode::serialized_size(&message) {
-                                    Ok(size) => size as usize,
+                                let size = match Encoding::serialized_size(&message) {
+                                    Ok(size) => size,
                                     Err(err) => {
                                         error!("Could not get the size of the packet {:?}: {}", message, err);
                                         continue;
                                     }
                                 };
 
-                                match bincode::serialize_into(&mut buffer[0..size], &message) {
+                                match Encoding::serialize_into(&mut buffer[0..size], &message) {
                                     Ok(_) => (),
                                     Err(err) => {
                                         error!("Coult not serialize packet into buffer {:?}: {}", message, err);
@@ -334,7 +332,7 @@ pub(crate) fn handle_new_incoming_connections(
                                     }
                                 };
 
-                                match write_size(&mut send_socket, size).await {
+                                match write_size(&mut send_socket, size + 2).await {
                                     Ok(_) => (),
                                     Err(err) => {
                                         error!("Could not send packet length: {:?}: {}", size, err);

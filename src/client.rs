@@ -15,6 +15,7 @@ use crate::{
     error::NetworkError,
     io::{write_size, read_size},
     network_message::{ClientMessage, NetworkMessage, ServerMessage},
+    marshaling::PacketMarshalingStrategy,
     ClientNetworkEvent, ConnectionId, NetworkData, NetworkPacket, NetworkSettings, SyncChannel,
 };
 
@@ -226,7 +227,7 @@ fn register_client_message<T>(
     );
 }
 
-pub fn handle_connection_event(
+pub fn handle_connection_event<Encoding: PacketMarshalingStrategy>(
     mut net_res: ResMut<NetworkClient>,
     mut events: EventWriter<ClientNetworkEvent>,
 ) {
@@ -255,15 +256,15 @@ pub fn handle_connection_event(
             debug!("Starting new server connection, sending task");
 
             while let Some(message) = recv_message.recv().await {
-                let size = match bincode::serialized_size(&message) {
-                    Ok(size) => size as usize,
+                let size = match Encoding::serialized_size(&message) {
+                    Ok(size) => size,
                     Err(err) => {
                         error!("Could not get the size of the packet {:?}: {}", message, err);
                         continue;
                     }
                 };
 
-                match bincode::serialize_into(&mut buffer[0..size], &message) {
+                match Encoding::serialize_into(&mut buffer[0..size], &message) {
                     Ok(_) => (),
                     Err(err) => {
                         error!("Coult not serialize packet into buffer {:?}: {}", message, err);
@@ -333,7 +334,7 @@ pub fn handle_connection_event(
                     }
                 }
 
-                let packet: NetworkPacket = match bincode::deserialize(&buffer[..length]) {
+                let packet: NetworkPacket = match Encoding::deserialize(&buffer[..length]) {
                     Ok(packet) => packet,
                     Err(err) => {
                         error!(

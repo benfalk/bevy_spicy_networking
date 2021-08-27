@@ -148,7 +148,11 @@ mod network_message;
 mod server;
 mod io;
 
+/// This is where the custom encoding lives?
+pub mod marshaling;
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::marker::PhantomData;
 
 use bevy::{prelude::*, utils::Uuid};
 pub use client::{AppNetworkClientMessage, NetworkClient};
@@ -158,6 +162,7 @@ use error::NetworkError;
 pub use network_message::{ClientMessage, NetworkMessage, ServerMessage};
 use serde::{Deserialize, Serialize};
 pub use server::{AppNetworkServerMessage, NetworkServer};
+use crate::marshaling::{Bincode, PacketMarshalingStrategy};
 
 struct SyncChannel<T> {
     pub(crate) sender: Sender<T>,
@@ -207,9 +212,24 @@ impl ConnectionId {
 
 #[derive(Serialize, Deserialize)]
 /// [`NetworkPacket`]s are untyped packets to be sent over the wire
-struct NetworkPacket {
-    kind: String,
-    data: Box<dyn NetworkMessage>,
+pub struct NetworkPacket {
+    /// The packet name tagged by your packet
+    pub kind: String,
+
+    /// The boxed packet downcasted as a NetworkMessage
+    pub data: Box<dyn NetworkMessage>,
+}
+
+impl NetworkPacket {
+    /// If you need to build a NetworkPacket from scratch
+    /// with a custom encoder... this is what you'll need
+    /// to use in order to build it.
+    pub fn new(kind: String, data: Box<dyn NetworkMessage>) -> Self {
+        Self {
+            kind,
+            data,
+        }
+    }
 }
 
 impl std::fmt::Debug for NetworkPacket {
@@ -299,15 +319,34 @@ impl Default for NetworkSettings {
 /// to instantiate a server
 pub struct ServerPlugin;
 
-impl Plugin for ServerPlugin {
+/// Use this to get custom encoding
+#[derive(Copy, Clone, Debug)]
+pub struct CustomEncodingServerPlugin<E: PacketMarshalingStrategy> {
+    phantom: PhantomData<E>,
+}
+
+impl<Encoding: PacketMarshalingStrategy> Default for CustomEncodingServerPlugin<Encoding> {
+    fn default() -> Self {
+        Self { phantom: PhantomData::<Encoding> }
+    }
+}
+
+impl<Encoding: PacketMarshalingStrategy + Send + Sync + 'static> Plugin for CustomEncodingServerPlugin<Encoding> {
     fn build(&self, app: &mut AppBuilder) {
         app.insert_resource(server::NetworkServer::new());
         app.add_event::<ServerNetworkEvent>();
         app.init_resource::<NetworkSettings>();
         app.add_system_to_stage(
             CoreStage::PreUpdate,
-            server::handle_new_incoming_connections.system(),
+            server::handle_new_incoming_connections::<Encoding>.system(),
         );
+    }
+}
+
+impl Plugin for ServerPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        let bin_encoding: CustomEncodingServerPlugin<Bincode> = Default::default();
+        bin_encoding.build(app);
     }
 }
 
@@ -316,7 +355,19 @@ impl Plugin for ServerPlugin {
 /// to instantiate a client
 pub struct ClientPlugin;
 
-impl Plugin for ClientPlugin {
+/// Use this to get custom encoding
+#[derive(Copy, Clone, Debug)]
+pub struct CustomEncodingClientPlugin<E: PacketMarshalingStrategy> {
+    phantom: PhantomData<E>,
+}
+
+impl<Encoding: PacketMarshalingStrategy> Default for CustomEncodingClientPlugin<Encoding> {
+    fn default() -> Self {
+        Self { phantom: PhantomData::<Encoding> }
+    }
+}
+
+impl<Encoding: PacketMarshalingStrategy + Send + Sync + 'static> Plugin for CustomEncodingClientPlugin<Encoding> {
     fn build(&self, app: &mut AppBuilder) {
         app.insert_resource(client::NetworkClient::new());
         app.add_event::<ClientNetworkEvent>();
@@ -327,7 +378,14 @@ impl Plugin for ClientPlugin {
         );
         app.add_system_to_stage(
             CoreStage::PreUpdate,
-            client::handle_connection_event.system(),
+            client::handle_connection_event::<Encoding>.system(),
         );
+    }
+}
+
+impl Plugin for ClientPlugin {
+    fn build(&self, app: &mut AppBuilder) {
+        let encoding: CustomEncodingClientPlugin<Bincode> = Default::default();
+        encoding.build(app);
     }
 }
